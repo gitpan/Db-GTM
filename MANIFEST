@@ -1,0 +1,17 @@
+Changes         -- changelog
+GTM.h	        -- function prototypes, structure definitions
+GTM.pm		-- PERL functions & package documentation
+GTM.xs		-- Module source code
+Makefile.PL	-- Makefile
+MANIFEST	-- This file
+ppport.h	-- PERL portability headers
+README		-- Installation instructions
+calltab.ci	-- Call-in translations for GT.M
+extapi.m	-- M source code for extracting data
+t/1_init.t	-- Testing routines
+t/2_set_get.t
+t/3_order.t
+t/4_query.t
+t/5_kill.t
+t/6_merge.t
+t/9_clear.t
