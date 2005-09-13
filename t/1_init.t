@@ -4,8 +4,7 @@
 #########################
 
 use Test::More tests => 3;
-BEGIN { use_ok('GTM') };
-$ENV{'GTMCI'}="/usr/local/gtm/xc/calltab.ci" unless $ENV{'GTMCI'};
+BEGIN { use_ok('Db::GTM') };
 
 #########################
 

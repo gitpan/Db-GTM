@@ -3,41 +3,56 @@
 
 #########################
 
-use Test::More tests => 3;
-BEGIN { use_ok('GTM') };
+use Test::More tests => 7;
+BEGIN { use_ok('Db::GTM') };
 $ENV{'GTMCI'}="/usr/local/gtm/xc/calltab.ci" unless $ENV{'GTMCI'};
 
 #########################
 
 my $db = new GTMDB('SPZ');
-ok($db,  "Initialize Database Link"); 
-is(&test_order($db),"passed", "\$O,CHILDREN,Correct M Collating Order");
 
+is(&create_subscripts($db->sub("TEST_ORDER")),"passed","Creating subscripts");
+is(&test_children($db->sub("TEST_ORDER")),"passed", 
+   "\$O,CHILDREN,Correct M Collating Order");
+
+is(
+  join(",",scalar($db->order("TEST_ORDER",""))),
+  "-10",
+  "scalar context - find first subscript"
+);
+
+is(
+  join(",",$db->order("TEST_ORDER","")),
+  "TEST_ORDER,-10",
+  "list context - find first subscript"
+);
+
+is(
+  $db->order("TEST_ORDER","A"),
+  "ALPHA",
+  "Getting first value from undefined"
+);
+
+is(
+  $db->order("TEST_ORDER",1),
+  "1.1",
+  "Numeric collating order"
+);
+
+$db->kill("TEST_ORDER");
 system("stty sane"); # gtm_init() screws up the terminal 
 
-sub test_order {
-  my($db) = @_;
-  $db->set("TEST_ORDER","A","FOO");
-  $db->set("TEST_ORDER","1","BAR");
-  $db->set("TEST_ORDER","2","BAZ");
-  $db->set("TEST_ORDER","100","BOO");
-  $db->set("TEST_ORDER","-5","BOOO");
-  $db->set("TEST_ORDER","-10","BOOO");
-  $db->set("TEST_ORDER","-5.5","BOOOZ");
-  $db->set("TEST_ORDER","1.1","BOZO");
-  $db->set("TEST_ORDER","ALPHA","BOOOL");
-  $db->set("TEST_ORDER","B","BOOLOO");
-  # Order should be [ -10 -5.5 -5 1 1.1 2 100 A ALPHA B ]
-  my($ch) = join(":",$db->children("TEST_ORDER"));
-  if($ch ne "-10:-5.5:-5:1:1.1:2:100:A:ALPHA:B") { return "failed children"; }
-  if($db->order("TEST_ORDER","") ne "-10")    { 
-    return "failed - null string to 1st"; 
-  }
-  if($db->order("TEST_ORDER","A") ne "ALPHA") { 
-    return "failed - undefined value to defined"; 
-  }
-  if($db->order("TEST_ORDER",1) ne "1.1")     { 
-    return "failed - collating order wrong"; 
-  }
+sub create_subscripts {
+  my($db,$i) = @_;
+  foreach $i (qw(A 1 2 100 -5 -10 -5.5 1.1 ALPHA B)) {
+    return "failed" if $db->set($i,"FOO$i");
+  } 
   return "passed";
 }
+
+sub test_children {
+  my($db) = @_;
+  my($ch) = join(":",$db->children());
+  return ($ch eq "-10:-5.5:-5:1:1.1:2:100:A:ALPHA:B") ? "passed" : "failed";
+}
+

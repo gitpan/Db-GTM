@@ -3,40 +3,45 @@
 
 #########################
 
-use Test::More tests => 3;
-BEGIN { use_ok('GTM') };
+use Test::More tests => 7;
+BEGIN { use_ok('Db::GTM') };
 $ENV{'GTMCI'}="/usr/local/gtm/xc/calltab.ci" unless $ENV{'GTMCI'};
 
 #########################
 
 my $db = new GTMDB('SPZ');
-ok($db,  "Initialize Database Link"); 
-is(&test_kill($db), "passed", "Data delete");
-system("stty sane"); # gtm_init() screws up the terminal 
 
-sub test_kill {
+&create_env($db->sub("TEST_KILL"));
+
+sub create_env {
   my($db) = @_;
-  $db->set("TEST_KILL","A","BOO");
-  $db->set("TEST_KILL","A",1,"FOO");
-  $db->set("TEST_KILL","A",2,"BAR");
-  $db->set("TEST_KILL","A",3,"BAZ");
-  $db->set("TEST_KILL","B","BOO");
-  $db->set("TEST_KILL","B",1,"FOO");
-  $db->set("TEST_KILL","B",2,"BAR");
-  $db->set("TEST_KILL","B",3,"BAZ");
-  $db->set("TEST_KILL","C","BOO");
-  $db->set("TEST_KILL","C",1,"FOO");
-  $db->set("TEST_KILL","C",2,"BAR");
-  $db->set("TEST_KILL","C",3,"BAZ");
 
-  $db->kv("TEST_KILL","A");   # Only 'A' should be dead
-  if(defined  $db->get("TEST_KILL","A"))   { return "failed kv"; }
-  if(!defined $db->get("TEST_KILL","A",1)) { return "failed kv"; }
-  $db->ks("TEST_KILL","B");   # 'B' should be OK, but not subs
-  if(!defined $db->get("TEST_KILL","B"))   { return "failed ks"; }
-  if(defined  $db->get("TEST_KILL","B",2)) { return "failed ks"; }
-  $db->kill("TEST_KILL","C"); # 'C' & subs should be dead
-  if(defined  $db->get("TEST_KILL","C"))   { return "failed kill"; }
-  if(defined  $db->get("TEST_KILL","C",3)) { return "failed kill"; }
-  return "passed";
+  $db->set("A","BOO");
+  $db->set("A",1,"FOO");
+  $db->set("A",2,"BAR");
+  $db->set("A",3,"BAZ");
+  $db->set("B","BOO");
+  $db->set("B",1,"FOO");
+  $db->set("B",2,"BAR");
+  $db->set("B",3,"BAZ");
+  $db->set("C","BOO");
+  $db->set("C",1,"FOO");
+  $db->set("C",2,"BAR");
+  $db->set("C",3,"BAZ");
+  return;
 }
+
+$db->kv("TEST_KILL","A");   # Only 'A' should be dead
+ok(!defined $db->get("TEST_KILL","A"),"killval kills target ");
+ok(defined $db->get("TEST_KILL","A",1),"killval ignores subscripts");
+
+$db->ks("TEST_KILL","B");   # 'B' should be OK, but not subs
+ok(defined $db->get("TEST_KILL","B"),"killsubs ignores target");
+ok(!defined $db->get("TEST_KILL","B",2),"killsubs kills subscripts");
+
+$db->kill("TEST_KILL","C"); # 'C' & subs should be dead
+ok(!defined $db->get("TEST_KILL","C"),"kill kills target");
+ok(!defined $db->get("TEST_KILL","C",3),"kill kills subscripts");
+
+$db->kill("TEST_KILL");
+system("stty sane"); # gtm_init() screws up the terminal 

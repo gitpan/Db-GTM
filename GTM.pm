@@ -16,7 +16,6 @@ our @ISA = qw(Exporter);
 # If you do not need this, moving things directly into @EXPORT or @EXPORT_OK
 # will save memory.
 our %EXPORT_TAGS = ( 'all' => [ qw(
- get set kill ks kv order revorder query children copy
 ) ] );
 
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
@@ -25,7 +24,7 @@ our @EXPORT = qw(
 	
 );
 
-our $VERSION = '1.11';
+our $VERSION = '1.26';
 
 require XSLoader;
 XSLoader::load('Db::GTM', $VERSION);
@@ -81,6 +80,8 @@ Db::GTM - Perl extension to interface with GT.M global data
 
   This module attempts to allow access to the GT.M globals database from
   PERL.  GT.M is a fast and flexible hierarchical database system.
+
+  This module documents Db::GTM module version $VERSION
 
 =head1 DESCRIPTION
 
@@ -243,6 +244,29 @@ Db::GTM - Perl extension to interface with GT.M global data
     $dblink2->ks("CRAZY EDDIE USED CARS"); # destroys ONLY the 'Address' record
     $dblink2->kv("PAY-AND-SPRAY");         # leaves 'Address' record intact
     $dblink2->kill();  # destroys the "auto dealerships" node and all subnodes
+
+=head3 TRANSACTIONS 
+
+  GT.M and Db::GTM support the concept of "transactions".  All database
+  changes made during a transaction are linked, meaning that either they
+  are all processed successfully or none of them are.  If there is a
+  fatal error or system crash in the middle of the transaction set, none
+  of the set/kill operations will take effect.
+
+  $status = $dblink->txnstart();   # Begin a transaction
+  $status = $dblink->txnabort();   # Abort a transaction, make no changes
+  $status = $dblink->txncommit();  # Save all set/kills made during txn
+
+  Example:
+    $status = $dblink->txnstart();
+    $dblink->set($acctno,"CHECKING","BALANCE",($oldChkBal - $transferAmt));
+    $dblink->set($acctno,"SAVINGS","BALANCE", ($oldSavBal + $transferAmt));
+    $status = $dblink->txncommit();
+
+  From the time you initiate txnstart(), all sets/kills are queued until
+  you do either txncommit() or txnabort().  
+
+  #HACK
 
 =head2 FUNCTION LIST
 

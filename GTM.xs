@@ -9,23 +9,25 @@
 #include "GTM.h"           // my prototypes
 #include "stdlib.h"        // setenv
 
-int err_gtm(int errcode) {
-  char *msgbuf = (char *)calloc(1024,sizeof(gtm_char_t));
-  gtm_zstatus(msgbuf,1024);
-  warn("GTM ERROR: (%d) %s\n", errcode, msgbuf);
-  return errcode;
+static void err_gtm(const GtmEnv *gt) {
+  char *msgbuf = gt ? gt->errmsg : (char *)calloc(1024,sizeof(gtm_char_t)); 
+  gtm_zstatus(msgbuf,1024); if(!gt || (gt && !(gt->flags & NO_WARN))) { 
+    warn("GTM ERROR: (%d) %s\n", gt->last_err, msgbuf); 
+  }
+  if(!gt) free(msgbuf); return;
 }
 
-char *packgvn(GtmEnv *gtenv, int len, strpack strs[],int flags) {
+// Returns 1 if you should free the GVN after you're done with it
+int packgvn(GtmEnv *gtenv, unsigned len,strpack strs[],
+            const unsigned flags, gtm_string_t *gvn) {
   unsigned i,xlen=(gtenv && !(flags & NO_PREFIX))?gtenv->pfx_elem:0,sz,tmp; 
-  char *ret=NULL,*loc,err=0,freestrs=0; strpack *seek;
+  unsigned err=0,freestrs=0; char *ret=NULL,*loc; strpack *seek;
 
-  sz = ((len+xlen)>1) ? (len+xlen)*3 : 2; 
-  if(xlen) {
+  if(!gvn) return; sz = ((len+xlen)>1) ? (len+xlen)*3 : 2; if(xlen) {
     sz += (unsigned)gtenv->pfx_length;  
-    for(i=0;i<xlen;i++) if(gtenv->prefix[i].num) sz -= 2;
+    for(i=xlen;i--;) if(gtenv->prefix[i].num) sz -= 2;
   }
-  if(len == 1 && strchr(strs[0].address,'\034')) {
+  if((flags & TIED) && len == 1 && strchr(strs[0].address,'\034')) {
     // Multidimensional array with \034 separators
     loc = strs[0].address; while( loc = index(loc,'\034') ) { len++; loc++; }
     loc = strs[0].address; freestrs=len; i = 0; sz += (len-1)*3;
@@ -39,17 +41,23 @@ char *packgvn(GtmEnv *gtenv, int len, strpack strs[],int flags) {
   } 
   // Validate global, calculate final GLVN size
   if(len||xlen) ret = (xlen) ? gtenv->prefix->address : strs[0].address; 
-  if(len == 1 && *strs[0].address == '^') return strs[0].address;
-  else if(!(len+xlen) || !(xlen || strs[0].length) || !ret || 
-     !((*ret >= 'a' && *ret <= 'z') || (*ret >= 'A' && *ret <= 'Z'))
-  ) err++; else for(i=0;i<len;i++) {
+  if(len == 1 && *strs[0].address == '^') { 
+    gvn->address = strs[0].address; gvn->length  = strs[0].length; return 0;
+  } else if(!(len || xlen) || !ret ||
+          !(xlen || (strs[0].length && strs[0].length <= _GT_MAX_GVNSIZE)) || 
+          !((*ret >= 'a' && *ret <= 'z') || (*ret >= 'A' && *ret <= 'Z')) 
+  ) err++; else for(i=len;i--;) {
       if(!strs[i].length && !((flags & ZEROLEN_OK) && i==(len-1))) err++;
       else sz += strs[i].length; 
       if(is_number(strs[i].address)) { sz -= 2; strs[i].num++; }
   }
-  if(err || !sz || sz > 255) {
+  if(err || !sz || sz > _GT_MAX_GVNLENGTH) {
     if(!(flags & NO_WARN)) warn("ERROR: Poorly-specified node name.\n"); 
-    if(freestrs) strpack_clear(strs,len); return NULL;
+    if(gtenv) {
+      gtenv->last_err = 1;
+      sprintf(gtenv->errmsg,"ERROR: Poorly-specified node name.");
+    }
+    if(freestrs) strpack_clear(strs,len); gvn->address = NULL; return 0;
   } else ret = (char *)calloc(sz+1,sizeof(char)); loc = ret; 
 
   *loc = '^'; loc++; for(i=0;i<(len+xlen);i++) {
@@ -64,26 +72,29 @@ char *packgvn(GtmEnv *gtenv, int len, strpack strs[],int flags) {
       if((len+xlen) > 1) { *loc = '('; loc++; }
     }
   }
-  if(freestrs) strpack_clear(strs,len); return ret;
+  if(freestrs) strpack_clear(strs,len); 
+  gvn->address = ret; gvn->length = sz; return 1;
 }
 
-int is_number(char *i) {
-  char dec=0; 
+static unsigned is_number(char *i) {
+  unsigned dec=0; 
 
   if(*i == '-') i++; if(*i == '0') {
     i++; if(*i != '.') return 0; else { dec++; i++; }
   } else if(*i < '0' || *i > '9') return 0; else i++;
-  for(;*i;i++) {
+  while(*i) {
     if(*i == '.') { if(dec) return 0; else { dec++; } }
-    else if(*i < '0' || *i > '9') return 0;
+    else if(*i < '0' || *i > '9') return 0; 
+    i++;
   }
   return (dec && (*(i-1) == '0')) ? 0 : 1;
 }
 
-cppack *unpackgvn(char *gvn) {
-  char *at = gvn, *seek, quot = 0, err = 0; cppack *ret, *working, *new;
+cppack *unpackgvn(const char *gvn) {
+  char *at = (char *)gvn, *seek;
+  unsigned quot=0,err=0; cppack *ret, *working, *new;
 
-  if(!gvn || (*gvn != '^') || strlen(gvn) > 255) return NULL;
+  if(!gvn || (*gvn != '^') || strlen(gvn) > _GT_MAX_GVNLENGTH) return NULL;
   ret = (cppack *)calloc(1,sizeof(cppack));
   at++; ret->loc = at; seek = index(at, '('); 
   if(!seek) return ret; else { *seek = '\0'; at = seek+1; }
@@ -102,10 +113,20 @@ cppack *unpackgvn(char *gvn) {
   return ret;
 }
 
-void strpack_clear(strpack *start,int len) {
-  unsigned i; strpack *zap; if(start) {
-    for(i=0;i<len;i++) free(start[i].address); free(start); 
+static void strpack_clear(strpack *start,unsigned len) {
+  strpack *zap; if(start) {
+    for(;len--;) free(start[len].address); free(start); 
   }
+}
+
+static void gtenv_clear(GtmEnv *dmw) {
+  if(dmw) {
+    strpack_clear(dmw->prefix,dmw->pfx_elem); 
+    if(dmw->errmsg)   free(dmw->errmsg);
+    if(dmw->xfer_buf) free(dmw->xfer_buf);
+    free(dmw); 
+  }
+  return;
 }
 
 
@@ -121,13 +142,16 @@ new(...)
 	  GtmEnvPtr::sub  = 3
 	CODE:
 	{
-	  gtm_status_t status; strpack *strp, *gvnprefix; 
+	  strpack *strp, *gvnprefix; 
 	  GtmEnv *setup = (GtmEnv *)calloc(1,sizeof(GtmEnv)), *sub; 
-	  int i,len,tlen=0; char *test,err=0;
+	  unsigned i,len=0,tlen=0,err=0; char *test;
 #ifdef _GT_NEED_SIGFIX
 	  sig_t sigint;
 #endif
-	
+
+	  setup->errmsg   = (char *)calloc(1024,sizeof(char));	
+	  setup->xfer_buf = (char *)calloc(_GT_MAX_BLOCKSIZE,sizeof(char));	
+          setup->flags &= (ix == 0 || ix == 3) ? NO_WARN : TIED;
 	  if(items > 256) { warn("Init fail; excessive prefixes...\n"); err++; }
 	  else if(items < 2) { warn("Init fail; no prefix given...\n"); err++; }
 	  else {
@@ -141,7 +165,7 @@ new(...)
 	      } 
 	    }
 	    setup->prefix = (strpack *)calloc(items+len-1,sizeof(strpack));
-	    if(ix==3&&sv_isa(ST(0),"GtmEnvPtr")) for(i=0;i<sub->pfx_elem;i++) {
+	    if(ix==3&&sv_isa(ST(0),"GtmEnvPtr")) for(i=sub->pfx_elem;i--;) {
 	      strp = &sub->prefix[i]; gvnprefix = &setup->prefix[i];
 	      gvnprefix->length = strp->length; gvnprefix->num = strp->num;
 	      gvnprefix->address=(char *)calloc(strp->length+1,sizeof(char));
@@ -156,9 +180,11 @@ new(...)
 	      if(!strp->length) { warn("Init fail; null subscript.\n"); err++; }
               else tlen += strp->length;
 	    }
-	    if(tlen > 255) { warn("Init fail; prefix too long...\n"); err++; }
-	    if(err) { strpack_clear(setup->prefix,items-1); free(setup); } 
-            else { setup->pfx_elem = (items+len-1); setup->pfx_length = tlen; }
+            setup->pfx_elem = (items+len-1); setup->pfx_length = tlen; 
+	    if(tlen > _GT_MAX_GVNLENGTH) { 
+              warn("Init fail; prefix too long...\n"); err++; 
+            }
+	    if(err) { gtenv_clear(setup); }
           } 
           if(!err) { 
 	    if(!_GTMinvoc) { // Save terminal settings to restore during END()
@@ -170,15 +196,19 @@ new(...)
 	      sigint = signal(SIGINT, SIG_DFL); // Save SIGINT handler
 #endif
 	      setenv("GTMCI",_GT_GTMCI_LOC,0);
-              status = gtm_init(); 
+	      setenv("gtmroutines",_GT_GTMRTN_LOC,0);
+	      setenv("gtmgbldir",_GT_GTMGBL_LOC,0);
+
+              setup->last_err = gtm_init(); 
 #ifdef _GT_NEED_SIGFIX
 	      signal(SIGINT, sigint); // Restore SIGINT handler
 #endif
-            } else status = 0;
-            if(status) { 
-	      err_gtm(status);strpack_clear(setup->prefix,items-1);free(setup); 
-	      XSRETURN_UNDEF; 
-            } else { RETVAL = setup; _GTMinvoc = 1; }
+            } else setup->last_err = 0;
+            if(setup->last_err) { 
+	      err_gtm(setup); gtenv_clear(setup); XSRETURN_UNDEF; 
+	    } else { 
+	      _GTMinvoc++; setup->gtmEnvId = _GTMinvoc; RETVAL = setup; 
+            }
 	  } else XSRETURN_UNDEF;
 	}
 	OUTPUT:
@@ -215,19 +245,18 @@ list2gvn(...)
 	{
 	  strpack *args; 
 	  GtmEnv *pfx = (ix<4) ? NULL : (GtmEnv *)SvIV((SV*)SvRV(ST(0)));
-	  int i,s = (ix<4) ? 0 : 1; SV *ret;
-	  char *glvn=NULL, *n=NULL; unsigned long status; gtm_string_t value;
+	  unsigned i,s = (ix<4) ? 0 : 1, n; SV *ret;
+	  gtm_string_t value, glvn;
 
 	  EXTEND(SP,1); if(items>s) {
 	    args = (strpack *)calloc(items-s,sizeof(strpack));
             for(i=s;i<items;i++) 
               args[i-s].address = (char *)SvPV(ST(i),args[i-s].length);
-	    glvn = packgvn(pfx,items-s,args,(ix<4) ? NO_PREFIX : 0); 
-            n=args[0].address; free(args); 
-	  } else { glvn = packgvn(pfx,0,NULL,0); }
-	  if(glvn) { 
-	    ret = sv_newmortal(); sv_setpv(ret, glvn); PUSHs(ret);
-	    if(glvn != n) free(glvn);
+	    n=packgvn(pfx,items-s,args,(ix<4)?NO_PREFIX:0,&glvn); free(args); 
+	  } else { n = packgvn(pfx,0,NULL,0,&glvn); }
+	  if(glvn.address) { 
+	    ret = sv_newmortal(); sv_setpv(ret, glvn.address); PUSHs(ret);
+	    if(n) free(glvn.address);
 	  } else PUSHs(&PL_sv_undef); 
 	}
 
@@ -235,10 +264,13 @@ void
 END()
 	PPCODE:
 	{
-	   if(_GTMinvoc) gtm_exit();
+	   if( _GTMinvoc ) {
+	     gtm_exit();
 #ifdef _GT_NEED_TERMFIX
-	   if(_GTMinvoc){ tcsetattr(STDIN_FILENO,0,_GTMterm); free(_GTMterm); }
+	     tcsetattr(STDIN_FILENO,0,_GTMterm); free(_GTMterm); 
 #endif
+	     _GTMinvoc = 0;
+           }
 	}
 
 MODULE = Db::GTM		PACKAGE = GtmEnvPtr
@@ -248,7 +280,7 @@ DESTROY(gt_env)
 	GtmEnv *gt_env
 	PPCODE:
 	{
-	   strpack_clear(gt_env->prefix,gt_env->pfx_elem); free(gt_env); 
+	   gtenv_clear(gt_env);
 	}
 
 void
@@ -261,26 +293,27 @@ get(gt_env,...)
 	  exists = 4
 	PPCODE:
 	{
-	  strpack *args; int i; char *glvn=NULL, *n=NULL; 
-	  unsigned long exst=0, status; gtm_string_t value; 
+	  strpack *args; unsigned i; 
+	  unsigned long exst=0,n; gtm_string_t value,glvn; 
 	  SV *ret=sv_newmortal(); EXTEND(SP, 1);
 
-	  if(items>1) { 
+          if( GIMME_V==G_VOID ) XSRETURN_UNDEF; if(items>1) { 
             args = (strpack *)calloc(items-1,sizeof(strpack));
 	    for(i=1;i<items;i++) 
               args[i-1].address = (char *)SvPV(ST(i),args[i-1].length);
-	    glvn = packgvn(gt_env,items-1,args,0);n=args[0].address;free(args); 
-	  } else { glvn = packgvn(gt_env,0,NULL,0); }
-	  if(glvn) {
-	    value.address = (char *)calloc(32770,sizeof(char)); 
-	    status = gtm_ci("get",&value,glvn,&exst); if(glvn != n) free(glvn); 
+	    n=packgvn(gt_env,items-1,args,(gt_env->flags & TIED),&glvn);
+            free(args); 
+	  } else { n=packgvn(gt_env,0,NULL,0,&glvn); }
+	  if(glvn.address) {
+	    value.address = gt_env->xfer_buf;
+	    gt_env->last_err=gtm_ci("get",&value,&glvn,&exst);
+            if(n) free(glvn.address); 
 	
-            if(status) { err_gtm(status); PUSHs(&PL_sv_undef); }
+            if(gt_env->last_err) { err_gtm(gt_env); PUSHs(&PL_sv_undef); }
             else if(ix == 3 || ix == 4) PUSHs(newSViv(exst ? 1 : 0));
             else if(ix == 5)            PUSHs(newSViv(exst > 1 ? 1 : 0));
             else if(exst == 0 || exst == 10) PUSHs(&PL_sv_undef); 
 	    else { sv_setpvn(ret, value.address, value.length); PUSHs(ret); } 
-            free(value.address); 
           }   else PUSHs(&PL_sv_undef); // Bad GVN name
 	}
 
@@ -292,18 +325,27 @@ set(gt_env,...)
 	  STORE = 2
 	PPCODE:
 	{
-	  strpack *args; int i; char *glvn=NULL, *n=NULL; unsigned long status; 
+	  strpack *args; unsigned i,n; gtm_string_t glvn;
 
 	  if(items>2) {
-	    args = (strpack *)calloc(items-1,sizeof(strpack));
+	    args = (strpack *)calloc(items-2,sizeof(strpack));
 	    for(i=1;i<(items-1);i++) 
               args[i-1].address = (char *)SvPV(ST(i),args[i-1].length);
-	    glvn = packgvn(gt_env,items-2,args,0);n=args[0].address;free(args); 
-	  } else { glvn = packgvn(gt_env,0,NULL,0); }
-	  EXTEND(SP,1); if(glvn) {
-	    status = gtm_ci("set",glvn,(char *)SvPV(ST(items-1),i));
-	    if(glvn != n) free(glvn); if(status) {
-	      err_gtm(status); XPUSHs(newSViv(status)); // GTM error
+	    n=packgvn(gt_env,items-2,args,(gt_env->flags & TIED),&glvn);
+            free(args); 
+	  } else { n=packgvn(gt_env,0,NULL,0,&glvn); }
+	  EXTEND(SP,1); if(glvn.address) {
+            if(inTxn(gt_env)) {
+	      gt_env->last_err = gtm_ci("txset", &glvn,
+                                        (char *)SvPV(ST(items-1),i),
+					gt_env->gtmEnvId
+                                       );
+            } else {
+	      gt_env->last_err=gtm_ci("set",&glvn,(char *)SvPV(ST(items-1),i));
+            }
+	    if(n) free(glvn.address); if(gt_env->last_err) {
+	      err_gtm(gt_env); 
+	      XPUSHs(newSViv(gt_env->last_err)); // GTM error
 	    } else XPUSHs(newSViv(0)); // Set OK
           }   else XPUSHs(newSViv(1)); // Bad GVN name
 	}
@@ -317,34 +359,35 @@ order(gt_env,...)
 	  first = 3
 	  FIRSTKEY = 4
 	  haschildren = 5
-	  revorder = 6
-	  prev = 7
-	  last = 8
+	  last = 6
+	  revorder = 7
+	  prev = 8
 	PPCODE:
 	{
-	  strpack *args; int i, aq=0, dir=(ix>5) ? -1 : 1; SV *ret;
-	  char *glvn=NULL, *n=NULL, *addquot= ""; 
-	  unsigned long status; gtm_string_t value;
+	  strpack *args,*x; unsigned i, aq=0,n; int dir=(ix>5)?-1:1; SV *ret;
+	  char *addquot=""; gtm_string_t value, glvn;
 
-	  if(items==1 || ix==3 || ix==4 || ix==5 || ix==8) { items++; aq++; }
+          if( GIMME_V==G_VOID ) XSRETURN_UNDEF;
+	  if(items==1 || (ix>2 && ix<7) ) { items++; aq++; }
 	  args = (strpack *)calloc(items-1,sizeof(strpack));
           for(i=1;i<(items-aq);i++) 
             args[i-1].address = (char *)SvPV(ST(i),args[i-1].length);
 	  if(aq) { args[items-2].address = addquot; args[items-2].length  = 0; }
-	  glvn = packgvn(gt_env,items-1,args,ZEROLEN_OK); 
-	  n=args[0].address; free(args); 
-	  EXTEND(SP,1); if(glvn) {
-	    value.address = (char *)calloc(260,sizeof(char)); 
-	    status = gtm_ci("order",&value,glvn,dir);
-	    if(status) { err_gtm(status); PUSHs(&PL_sv_undef); } 
-	    else if(!value.length) PUSHs(&PL_sv_undef); 
+	  n=packgvn(gt_env,items-1,args,ZEROLEN_OK|(gt_env->flags&TIED),&glvn);
+          free(args); EXTEND(SP,1); if(glvn.address) {
+	    value.address = gt_env->xfer_buf;
+	    gt_env->last_err = gtm_ci("order",&value,&glvn,dir);
+	    if(gt_env->last_err) { err_gtm(gt_env); PUSHs(&PL_sv_undef); } 
+            else if(!value.length && GIMME_V==G_ARRAY) ; // Nothing to do
+            else if(!value.length) PUSHs(&PL_sv_undef); 
 	    else if(ix == 5) PUSHs(newSViv(1)); 
             else {
-	      //ret = sv_newmortal();
-	      //sv_setpvn(ret, value.address, value.length); PUSHs(ret);
-	      PUSHs(newSVpvn(value.address, value.length));
-	    }
-	    if(glvn != n) free(glvn); free(value.address);
+              if( GIMME_V==G_ARRAY ) {
+                EXTEND(SP,items-1); for(i=1;i<(items-1);i++) PUSHs(ST(i));
+              }
+              PUSHs(newSVpvn(value.address, value.length));
+            }
+	    if(n) free(glvn.address); 
           } else PUSHs(&PL_sv_undef); // Bad GVN name
 	}
 
@@ -352,32 +395,42 @@ void
 kill(gt_env,...)
 	GtmEnv *gt_env
 	ALIAS:
-	  ks = 1
-	  kv = 2
-	  DELETE = 3
-	  CLEAR = 4
+	  DELETE = 1
+	  CLEAR = 2
+	  ks = 3
+	  kv = 4
 	PPCODE:
 	{
-	  strpack *args; int i; char *glvn=NULL, *n=NULL; 
-	  unsigned long status=1; 
+	  strpack *args; unsigned i,n; gtm_string_t glvn;
 
           if(items>1) {
 	    args = (strpack *)calloc(items-1,sizeof(strpack));
             for(i=1;i<items;i++) 
               args[i-1].address = (char *)SvPV(ST(i),args[i-1].length);
-	    glvn = packgvn(gt_env,items-1,args,0); 
-	    n = args[0].address; free(args); 
-	  } else { glvn = packgvn(gt_env,0,NULL,0); }
-	  EXTEND(SP,1); if(glvn) {
-	    switch(ix) {
-	     case 0: case 3: case 4:
-                     status = gtm_ci("kill",glvn); break;
-	     case 1: status = gtm_ci("ks",glvn);   break;
-	     case 2: status = gtm_ci("kv",glvn);   break;
-	     default: break;
-	    }
-	    if(glvn != n) free(glvn); if(status) {
-	      err_gtm(status); PUSHs(newSViv(status));
+	    n = packgvn(gt_env,items-1,args,(gt_env->flags & TIED),&glvn); 
+            free(args); 
+	  } else { n = packgvn(gt_env,0,NULL,0,&glvn); }
+	  EXTEND(SP,1); if(glvn.address) {
+            if(inTxn(gt_env)) {
+              i = (gtm_long_t)gt_env->gtmEnvId;
+	      switch(ix) {
+	        case 0: case 1: case 2:
+                        gt_env->last_err = gtm_ci("txkill",&glvn,i); break;
+	        case 3: gt_env->last_err = gtm_ci("txks",&glvn,i);   break;
+	        case 4: gt_env->last_err = gtm_ci("txkv",&glvn,i);   break;
+	        default: break;
+	      }
+            } else {
+	      switch(ix) {
+	        case 0: case 1: case 2:
+                        gt_env->last_err = gtm_ci("kill",&glvn); break;
+	        case 3: gt_env->last_err = gtm_ci("ks",&glvn);   break;
+	        case 4: gt_env->last_err = gtm_ci("kv",&glvn);   break;
+	        default: break;
+	      }
+            }
+	    if(n) free(glvn.address); if(gt_env->last_err) {
+	      err_gtm(gt_env); PUSHs(newSViv(gt_env->last_err));
 	    } else PUSHs(newSViv(0)); // Kill OK
           }   else PUSHs(newSViv(1)); // Bad GVN name
 	}
@@ -387,25 +440,25 @@ query(gt_env,...)
 	GtmEnv *gt_env
 	PPCODE:
 	{
-	  unsigned long status=1; SV *ret; char *glvn=NULL, *n=NULL, **brk; 
-	  strpack *args; cppack *start=NULL,*next; gtm_string_t value;
-	  int i,y,z; 
+	  SV *ret; char **brk; 
+	  strpack *args; cppack *start=NULL,*next; gtm_string_t value, glvn;
+	  unsigned i,z,n; 
 
-	  if(items>1) {
+          if( GIMME_V==G_VOID ) XSRETURN_UNDEF; if(items>1) {
 	    args = (strpack *)calloc(items-1,sizeof(strpack));
 	    for(i=1;i<items;i++) 
               args[i-1].address = (char *)SvPV(ST(i),args[i-1].length);
-	    glvn=packgvn(gt_env,items-1,args,0); n=args[0].address; free(args); 
-	  } else { glvn = packgvn(gt_env,0,NULL,0); }
-	  if(glvn) {
-	    value.address = (char *)calloc(260,sizeof(char)); 
-	    status = gtm_ci("query",&value,glvn);
-	    if(glvn != n) free(glvn); if(status) {
-              err_gtm(status); XPUSHs(&PL_sv_undef);
+	    n=packgvn(gt_env,items-1,args,0,&glvn); free(args); 
+	  } else { n = packgvn(gt_env,0,NULL,0,&glvn); }
+	  if(glvn.address) {
+	    value.address = gt_env->xfer_buf;
+	    gt_env->last_err = gtm_ci("query",&value,&glvn);
+	    if(n) free(glvn.address); if(gt_env->last_err) {
+              err_gtm(gt_env); XPUSHs(&PL_sv_undef);
 	    } else {
 	      value.address[value.length] = '\0'; 
 	      start = unpackgvn(value.address); z=0; 
-	        for(i=0;i<(gt_env->pfx_elem);i++) {
+	        for(i=(gt_env->pfx_elem);i--;) {
 		if(!start && 
 	            strncmp(start->loc,
                             gt_env->prefix[i].address,
@@ -419,7 +472,6 @@ query(gt_env,...)
 	        ret = sv_newmortal(); sv_setpv(ret, start->loc); XPUSHs(ret);
 		next = start->next; free(start); start = next;
               }
-	      free(value.address);
 	    }
           } else XPUSHs(&PL_sv_undef);
 	}
@@ -429,43 +481,37 @@ children(gt_env,...)
 	GtmEnv *gt_env
 	PPCODE:
 	{
-	  char *glvnbuf=(char *)calloc(260,sizeof(char)),*glvn=NULL,*n=NULL; 
-	  strpack *args; gtm_string_t value; int i; SV *ret; char *loc;
-	  unsigned long len, status=0, count=0; 
+          char *end="\")\x00\x00",*loc; unsigned count=0,n,kids=0,base;
+	  strpack *args; gtm_string_t value,glvn,buf; 
 
+          if( GIMME_V==G_VOID ) XSRETURN_UNDEF;
+	  buf.address = (char *)calloc(_GT_MAX_GVNLENGTH+5,sizeof(char));
 	  if(items>1) {
-	    args = (strpack *)calloc(items-1,sizeof(strpack));
-	    for(i=1;i<items;i++) 
-              args[i-1].address = (char *)SvPV(ST(i),args[i-1].length);
-	    glvn=packgvn(gt_env,items-1,args,0); n=args[0].address; free(args); 
-	  } else { glvn = packgvn(gt_env,0,NULL,0); }
-	  if(glvn) {
-	    len = strlen(glvn); if(len > 255) {
-              warn("GTM-ERR: Passed-in node name too long\n"); loc = NULL; 
-	    } else if( glvn[len-1] == ')' ) {
-  	      memcpy(glvnbuf,glvn,len); loc=glvnbuf+len-1; *loc = ','; loc++;
-	    } else {
-	      memcpy(glvnbuf,glvn,len); loc=glvnbuf+len;   *loc = '('; loc++;
-	    }
-            if(loc) {
-              value.address = (char *)calloc(260,sizeof(char));
-
-              sprintf(loc,"\"\")"); status = gtm_ci("order",&value,glvnbuf,1); 
-	      while(!status && value.length) {
-	        value.address[value.length] = '\0'; 
-		XPUSHs(newSVpvn(value.address, value.length));
-
-	        // the \"s aren't necessary around canonical numbers but ehh.
-	        // It's faster this way than to check + atof/atoi
-	        sprintf(loc,"\"%s\")",value.address);
-	        status = gtm_ci("order",&value,glvnbuf,1); 
-              }
-	      if(status) err_gtm(status); 
-	      free(value.address); 
+	    unsigned i; items--;
+            args = (strpack *)calloc(items,sizeof(strpack));
+	    for(i=0;i<items;i++) 
+              args[i].address = (char *)SvPV(ST(i+1),args[i].length);
+	    n=packgvn(gt_env,items,args,0,&glvn); free(args); 
+	  } else { n = packgvn(gt_env,0,NULL,0,&glvn); }
+	  if(glvn.address) {
+            count=glvn.length-1; 
+            memcpy(buf.address,glvn.address,count); loc=buf.address+count-1; 
+            if( buf.address[count-1] == ')' ) { *loc = ','; loc++; }
+	    else { loc++; *loc = '('; loc++; }
+            sprintf(loc,"\"\")"); loc++; value.address = loc;
+	    base=(unsigned)(loc - buf.address); buf.length = base+2;
+	   
+	    gt_env->last_err = gtm_ci("order",&value,&buf,1); 
+            unsigned wantarray=(GIMME_V==G_ARRAY); 
+	    while(!gt_env->last_err && value.length) {
+              if(wantarray) XPUSHs(newSVpvn(value.address, value.length));
+	      kids++; memcpy(value.address+value.length, end, 4);
+	      buf.length = base + value.length + 2;
+	      gt_env->last_err = gtm_ci("order",&value,&buf,1); 
             }
-            if(glvn != n) free(glvn);
+	    if(gt_env->last_err) err_gtm(gt_env); if(n) free(glvn.address);
           }
-	  free(glvnbuf); 
+	  free(buf.address); if(GIMME_V == G_SCALAR) XPUSHs(newSViv(kids));
 	}
 
 void
@@ -484,41 +530,142 @@ copy(...)
 	  GTMDB::overwrite = 11
 	PPCODE:
 	{
-	  strpack *args; int i,mid=0,ov=(ix & 2)?1:0,ob=(ix<4)?1:0; SV *ret;
-	  char *src=NULL,*dst=NULL,s=1,d=1; unsigned long status; strpack value;
+	  strpack *args; unsigned i,mid=0,ov=(ix & 2)?1:0,ob=(ix<4)?1:0,s=1,d=1;
 	  GtmEnv *gt_env = (ob) ? (GtmEnv *)SvIV((SV*)SvRV(ST(0))) : NULL;
+	  gtm_string_t src, dst; unsigned fs, fd; strpack value; SV *ret;
 
 	  EXTEND(SP,1); if(items == (ob+2)) { 
 	    // Two arguments passed in...
-	    if(!sv_isa(ST(ob),"GtmEnvPtr")) { src=(char *)SvPV(ST(ob),i); s=0; }
-            else src = packgvn((GtmEnv *)SvIV((SV*)SvRV(ST(ob))),0,NULL,0);
-	    if(!sv_isa(ST(ob+1),"GtmEnvPtr")){dst=(char *)SvPV(ST(ob+1),i);d=0;}
-	    else dst = packgvn((GtmEnv *)SvIV((SV*)SvRV(ST(ob+1))),0,NULL,0);
+	    // They could either be GtmEnvPtrs (PERL GTMDB objects)
+	    //   or they could be global names like ^FOO("BAR"), or both
+	    if(!sv_isa(ST(ob),"GtmEnvPtr")) { 
+              fs=0; src.address=(char *)SvPV(ST(ob),src.length);
+            } else fs=packgvn((GtmEnv *)SvIV((SV*)SvRV(ST(ob))),0,NULL,0,&src);
+	    if(!sv_isa(ST(ob+1),"GtmEnvPtr")) { 
+              fd=0; dst.address=(char *)SvPV(ST(ob+1),dst.length);
+            }else fd=packgvn((GtmEnv *)SvIV((SV*)SvRV(ST(ob+1))),0,NULL,0,&dst);
+
 	  } else if(ob && items == 2 && sv_isa(ST(1),"GtmEnvPtr") ) {
-            src = packgvn((GtmEnv *)SvIV((SV*)SvRV(ST(1))),0,NULL,0);
-	    dst = packgvn(gt_env,0,NULL,0); 
+            fs = packgvn((GtmEnv *)SvIV((SV*)SvRV(ST(1))),0,NULL,0,&src);
+	    fd = packgvn(gt_env,0,NULL,0,&dst); 
 	  } else if(items>ob) {
-	    args = (strpack *)calloc(items-ob,sizeof(strpack)); 
+	    args = (strpack *)calloc(items-ob,sizeof(strpack)); fs = 1; fd = 1;
 	    for(i=ob;i<items;i++) {
               args[i-ob].address = (char *)SvPV(ST(i),args[i-ob].length);
 	      if(!args[i-ob].length && !mid) mid = i-ob;
 	    }
 	    if(!mid && ob) { // No target specified, assume it's us
-	      src = packgvn(gt_env,items-1,args,0); 
-	      dst = packgvn(gt_env,0,NULL,0); 
+	      packgvn(gt_env,items-1,args,0,&src); 
+	      packgvn(gt_env,0,NULL,0,&dst); 
 	    } else {
-	      src = packgvn(gt_env,mid,args,0); 
-	      dst = packgvn(gt_env,(items-(mid+1+ob)),&args[mid+1],0);
+	      packgvn(gt_env,mid,args,0,&src); 
+	      packgvn(gt_env,(items-(mid+1+ob)),&args[mid+1],0,&dst);
             }
             free(args); 
 	  }
-	  if(src && dst) {
-	    if(!ov) status = gtm_ci("copy",src,dst); 
-	    else    status = gtm_ci("clone",src,dst); 
-	    if(status) { err_gtm(status); PUSHs(newSViv(status)); } 
-	    else PUSHs(newSViv(0));
+	  if(src.address && dst.address) {
+            if(inTxn(gt_env)) {
+              i = gt_env->gtmEnvId;
+	      if(!ov) gt_env->last_err = gtm_ci("txcopy",&src,&dst,i); 
+	      else    gt_env->last_err = gtm_ci("txclone",&src,&dst,i); 
+            } else {
+	      if(!ov) gt_env->last_err = gtm_ci("copy",&src,&dst); 
+	      else    gt_env->last_err = gtm_ci("clone",&src,&dst); 
+            }
+	    if(gt_env->last_err) { 
+	      err_gtm(gt_env); PUSHs(newSViv(gt_env->last_err)); 
+            } else PUSHs(newSViv(0));
 	  } else PUSHs(newSViv(1)); // Bad GVN name(s)
-	  if(s && src) free(src); if(d && dst) free(dst); 
+	  if(fs && src.address) free(src.address); 
+          if(fd && dst.address) free(dst.address); 
+	}
+
+void
+txnstart(gt_env)
+	GtmEnv *gt_env
+	ALIAS:
+	  txnabort = 1
+	  txncommit = 2
+	PPCODE:
+	{
+	  EXTEND(SP,1); switch(ix) {
+            case 0: gt_env->flags |= IN_TXN; break;
+            case 1: if(inTxn(gt_env)) {
+		      gt_env->last_err = gtm_ci("tabort",gt_env->gtmEnvId); 
+		      gt_env->flags -= IN_TXN;
+		    }
+                    break;
+            case 2: if(inTxn(gt_env)) {
+		      gt_env->last_err = gtm_ci("tcommit",gt_env->gtmEnvId); 
+		      if(!gt_env->last_err) gt_env->flags -= IN_TXN;
+                    }
+		    break;
+	  }
+	  if(gt_env->last_err) {
+            err_gtm(gt_env); PUSHs(newSViv(gt_env->last_err)); // GTM error
+          } else PUSHs(newSViv(0)); // Txn command OK
+	}
+
+void
+lock(gt_env,...)
+	GtmEnv *gt_env
+	PPCODE:
+	{
+          strpack *args; unsigned i,n; gtm_string_t glvn;
+	  gtm_long_t value, timeout;
+
+          if(items>1) {
+            timeout = (gtm_long_t)SvIV(ST(items-1));
+            args = (strpack *)calloc(items-2,sizeof(strpack));
+            for(i=1;i<(items-1);i++)
+              args[i-1].address = (char *)SvPV(ST(i),args[i-1].length);
+            n=packgvn(gt_env,items-2,args,(gt_env->flags & TIED),&glvn);
+            free(args);
+          } else { n=packgvn(gt_env,0,NULL,0,&glvn); }
+
+	  if(glvn.address) {
+	    EXTEND(SP,1); 
+            gt_env->last_err=gtm_ci("lock",&value,&glvn,timeout);
+            if(n) free(glvn.address); 
+
+	    if(!value) { 
+              gt_env->last_err=1; PUSHs(newSViv(1));
+              sprintf(gt_env->errmsg,"ERROR: Lock not obtained.");
+            } else if(gt_env->last_err) {
+              err_gtm(gt_env); PUSHs(newSViv(gt_env->last_err)); // GTM error
+            } else PUSHs(newSViv(0)); // Lock OK
+	  }
+	}
+
+void
+unlock(gt_env,...)
+	GtmEnv *gt_env
+	PPCODE:
+	{
+          strpack *args; unsigned i,n; gtm_string_t glvn;
+
+          if(items>1) {
+            args = (strpack *)calloc(items-1,sizeof(strpack));
+            for(i=1;i<items;i++)
+              args[i-1].address = (char *)SvPV(ST(i),args[i-1].length);
+            n=packgvn(gt_env,items-1,args,(gt_env->flags & TIED),&glvn);
+            free(args);
+          } else { n=packgvn(gt_env,0,NULL,0,&glvn); }
+
+	  if(glvn.address) {
+	    EXTEND(SP,1); gt_env->last_err=gtm_ci("unlock",&glvn);
+            if(n) free(glvn.address); if(gt_env->last_err) {
+              err_gtm(gt_env); PUSHs(newSViv(gt_env->last_err)); // GTM error
+            } else PUSHs(newSViv(0));  // Unlock OK
+	  }
+	}
+
+void
+getid(gt_env)
+	GtmEnv *gt_env
+	PPCODE:
+	{
+	  XPUSHs(newSViv(gt_env->gtmEnvId));
 	}
 
 void
@@ -526,7 +673,7 @@ getprefix(gt_env)
 	GtmEnv *gt_env
 	PPCODE:
 	{
-          strpack *x; int i; SV *ret; EXTEND(SP,gt_env->pfx_elem);
+          strpack *x; unsigned i; EXTEND(SP,gt_env->pfx_elem);
 	  if(gt_env->prefix) for(i=0;i<(gt_env->pfx_elem);i++) {
 	    x=&gt_env->prefix[i]; PUSHs(newSVpvn(x->address, x->length));
           }
