@@ -39,6 +39,4 @@ txaddcmd(id,cmd,p1,p2)	n cmdno s cmdno=$O(GTTXNCMD(id,""),-1)+1
 txclear(id)		k GTTXNCMD(id) q
 lock(glvn,timeout)	i timeout>-1 lock +@glvn:timeout q $TEST
 			e  lock +@glvn q $TEST
-unlock(glvn)		i $G(glvn,"")="" lock  
-			e  lock -@glvn 
-			q
+unlock(glvn)		lock -@glvn q

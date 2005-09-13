@@ -612,7 +612,7 @@ lock(gt_env,...)
 	PPCODE:
 	{
           strpack *args; unsigned i,n; gtm_string_t glvn;
-	  gtm_long_t value, timeout;
+	  gtm_long_t value, timeout = 0;
 
           if(items>1) {
             timeout = (gtm_long_t)SvIV(ST(items-1));

@@ -35,6 +35,7 @@ Revision history for Perl extension GTM.
 	  list when called in list context
 	- Get/Order/Children/Query will short-circuit exit when called
 	  in void context (they won't call-in to GTM at all)
-1.26  Mon Sep 12 17:47:54 PDT 2005
+1.27  Mon Sep 12 19:15:43 PDT 2005
 	- Transaction support added (painfully)
 	- Support for the M locking system
+        - Bugfix to using a $db->node as the 2nd argument to copy()

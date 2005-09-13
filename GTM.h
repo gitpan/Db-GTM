@@ -4,10 +4,14 @@
  *
  */
 
+//  --- Begin user modification section ---
+
 // File locations, default environment variable settings
 #define _GT_GTMCI_LOC "/usr/local/gtm/xc/calltab.ci"
 #define _GT_GTMRTN_LOC "/home/vmacs/rtn-obj(/home/vmacs/rtn-cvs/misc)"
 #define _GT_GTMGBL_LOC "/usr/local/vmacs/vpro.gld"
+
+//  ---- End user modification section ----
 
 // Flags to OR together to define how to pack a GVN
 #define ZEROLEN_OK 1               // GLVN with final subscript of "" OK

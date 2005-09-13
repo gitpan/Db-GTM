@@ -24,7 +24,7 @@ our @EXPORT = qw(
 	
 );
 
-our $VERSION = '1.26';
+our $VERSION = '1.27';
 
 require XSLoader;
 XSLoader::load('Db::GTM', $VERSION);
@@ -266,7 +266,52 @@ Db::GTM - Perl extension to interface with GT.M global data
   From the time you initiate txnstart(), all sets/kills are queued until
   you do either txncommit() or txnabort().  
 
-  #HACK
+  Note that if you have multiple GTMDB objects and only do a txnstart()
+  with one of them, then the others will behave normally (their writes
+  will take effect immediately).
+
+  Also note that until a txncommit() is performed, everyone who views 
+  the data that has been set since a txnstart() will see the OLD data,
+  not the stuff that is in the process of being written.
+
+=head3 LOCKING
+
+  $status = $dblink->lock(@name,$seconds);   # Lock a database node
+  $status = $dblink->unlock(@name);          # Unlock something locked prior
+
+  seconds: the last parameter to lock() is the number of seconds to
+    wait to get a lock before giving up.  This is important as GT.M
+    reserves the use of signals for itself and using SIGALRM may 
+    cause problems.
+
+    Specifying a seconds count of 0 will make the locking attempt 
+    fail immediately if another lock exists.
+  
+    Specifying a seconds count of -1 will make the locking attempt
+    wait forever for a conflicting lock to be released.  This can 
+    lead to deadlock, so use with caution.
+
+  If you specify a global name, you MUST specify a seconds count.
+  Bad things will happen to you if you don't.
+
+  In order to work gracefully with other processes that are attempting
+  to update data in the GTM datastore, you can request locks on database
+  nodes.  Locks are advisory (meaning that it's possible to write to a
+  "locked" node if you don't bother to ask for your lock first).  Locks
+  are automatically released when your process exits.
+
+  Lock on a higher-level resources conflict with lower-level ones.
+
+  Examples:
+    (Process 1)  $db = new GTMDB("TOPNODE");
+                 $db->lock("MYNODE","A",0);  # Lock (TOPNODE.MYNODE.A)
+
+    (Process 2)  $db = new GTMDB("TOPNODE");
+                 $db->lock("MYNODE",0);      # Lock (TOPNODE.MYNODE)
+                 # Fails because process 1 has a conflicting lock
+
+  Note that you can always get locks to resources that you have previously
+  locked, or lock a lower level resource.
 
 =head2 FUNCTION LIST
 
@@ -301,6 +346,13 @@ Db::GTM - Perl extension to interface with GT.M global data
   $status = $db_obj->kill(@name);      # Destroys node and all subnodes
   $status = $db_obj->ks(@name);        # Destroys all sub-nodes only
   $status = $db_obj->kv(@name);        # Destroys current node only
+
+  $status = $dblink->txnstart();       # Begin a transaction
+  $status = $dblink->txnabort();       # Abort a transaction, make no changes
+  $status = $dblink->txncommit();      # Save all set/kills made during txn
+
+  $status = $dblink->lock(@name,$seconds);   # Lock a database node
+  $status = $dblink->unlock(@name);          # Unlock locked database node
 
   $status = $db_obj->merge(@srcname [ ,undef,@dstname ]); 
       # Copies nodes in @srcname into @dstname, overwriting collisions 
